@@ -1,10 +1,10 @@
 {
   "name": "llm-cost-attr",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "FinOps cost attribution and optimization tool for LLM API usage. Scans codebases for LLM calls, estimates costs, recommends optimizations.",
   "type": "module",
   "bin": {
-    "llm-cost-attr": "./dist/index.js"
+    "llm-cost-attr": "dist/index.js"
   },
   "main": "dist/index.js",
   "files": [
@@ -30,7 +30,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/789st1/llm-cost-attr"
+    "url": "git+https://github.com/789st1/llm-cost-attr.git"
   },
   "scripts": {
     "build": "tsup",
