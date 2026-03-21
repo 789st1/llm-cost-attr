@@ -9,18 +9,28 @@ const IMPORT_PATTERNS = [
 const CALL_PATTERNS = [
   { regex: /\.chat\.completions\.create\s*\(/g, callType: "chat" as const },
   { regex: /\.embeddings\.create\s*\(/g, callType: "embedding" as const },
-  { regex: /\.completions\.create\s*\(/g, callType: "chat" as const },
 ];
 
 function detectLoop(lines: string[], lineIdx: number): { inLoop: boolean; multiplier: number } {
   const start = Math.max(0, lineIdx - 30);
+  let braceDepth = 0;
   for (let i = lineIdx - 1; i >= start; i--) {
+    for (const ch of lines[i]) {
+      if (ch === '}') braceDepth++;
+      if (ch === '{') braceDepth--;
+    }
+    if (braceDepth < 0) break;
     if (/\bfor\s*\(/.test(lines[i]) || /\.forEach\s*\(/.test(lines[i]) || /\.map\s*\(/.test(lines[i])) {
       return { inLoop: true, multiplier: 5 };
     }
-    if (/^\s*\}\s*$/.test(lines[i])) break;
   }
   return { inLoop: false, multiplier: 1 };
+}
+
+function detectCaching(lines: string[], lineIdx: number): boolean {
+  const start = Math.max(0, lineIdx - 50);
+  const block = lines.slice(start, lineIdx + 5).join("\n");
+  return /redis|cache|Cache|\.get\s*\(.*key|cached|memoize/i.test(block);
 }
 
 export const openaiScanner: PatternScanner = {
@@ -54,7 +64,7 @@ export const openaiScanner: PatternScanner = {
           estimatedInputTokens: null,
           inLoop: loop.inLoop,
           loopMultiplier: loop.multiplier,
-          hasCaching: false,
+          hasCaching: detectCaching(lines, lineIdx),
           confidence: "high",
           rawSnippet: snippet,
         });
