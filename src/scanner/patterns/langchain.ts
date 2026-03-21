@@ -1,0 +1,128 @@
+import type { CallSite, PatternScanner } from "../types.js";
+
+const IMPORT_PATTERNS = [
+  /from\s+langchain/,
+  /import\s+.*langchain/,
+  /ChatGoogleGenerativeAI/,
+  /ChatVertexAI/,
+  /ChatOpenAI/,
+  /ChatAnthropic/,
+];
+
+const CALL_PATTERNS = [
+  { regex: /\.invoke\s*\(/g, callType: "chat" as const },
+  { regex: /\.ainvoke\s*\(/g, callType: "chat" as const },
+  { regex: /\.astream\s*\(/g, callType: "chat" as const },
+  { regex: /\.stream\s*\(/g, callType: "chat" as const },
+];
+
+// Detect LangChain model instantiation to extract model name
+const MODEL_INIT_PATTERNS = [
+  /ChatGoogleGenerativeAI\s*\([^)]*model\s*=\s*["']([^"']+)["']/g,
+  /ChatVertexAI\s*\([^)]*model\s*=\s*["']([^"']+)["']/g,
+  /ChatOpenAI\s*\([^)]*model\s*=\s*["']([^"']+)["']/g,
+  /ChatAnthropic\s*\([^)]*model\s*=\s*["']([^"']+)["']/g,
+  /get_chat_llm\s*\(/g,
+];
+
+function resolveProvider(content: string): string {
+  if (/ChatGoogleGenerativeAI|ChatVertexAI|gemini/i.test(content)) return "google";
+  if (/ChatOpenAI|openai/i.test(content)) return "openai";
+  if (/ChatAnthropic|claude/i.test(content)) return "anthropic";
+  return "google"; // default for this codebase
+}
+
+function extractModelFromFile(content: string): string | null {
+  for (const pattern of [
+    /model\s*=\s*["']([^"']+)["']/,
+    /model_name\s*=\s*["']([^"']+)["']/,
+    /gemini_model\s*[=:]\s*["']([^"']+)["']/,
+  ]) {
+    const match = pattern.exec(content);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+export const langchainScanner: PatternScanner = {
+  detectImports(content: string): boolean {
+    return IMPORT_PATTERNS.some((p) => p.test(content));
+  },
+
+  findCallSites(filePath: string, content: string, lines: string[]): CallSite[] {
+    const sites: CallSite[] = [];
+    const model = extractModelFromFile(content);
+
+    for (const { regex, callType } of CALL_PATTERNS) {
+      regex.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = regex.exec(content)) !== null) {
+        const lineIdx = content.substring(0, match.index).split("\n").length - 1;
+        const line = lines[lineIdx];
+
+        // Skip if this is not an LLM call (e.g., dict.invoke, list.invoke)
+        if (/^\s*#/.test(line)) continue;
+        // Must be on an object that looks like an LLM
+        if (!/(?:llm|model|chain|agent|graph|self\.\w*(?:llm|gemini|service))/.test(
+          lines.slice(Math.max(0, lineIdx - 3), lineIdx + 1).join("\n")
+        )) continue;
+
+        const snippet = lines.slice(Math.max(0, lineIdx - 1), lineIdx + 2).join("\n");
+
+        // Detect loop
+        let inLoop = false;
+        let multiplier = 1;
+        const start = Math.max(0, lineIdx - 20);
+        for (let i = lineIdx - 1; i >= start; i--) {
+          if (/\bfor\s+/.test(lines[i]) || /\bwhile\s+/.test(lines[i]) || /async\s+for/.test(lines[i])) {
+            inLoop = true;
+            multiplier = 5;
+            break;
+          }
+        }
+
+        sites.push({
+          file: filePath,
+          line: lineIdx + 1,
+          provider: "langchain",
+          callType,
+          model,
+          maxTokens: null,
+          estimatedInputTokens: null,
+          inLoop,
+          loopMultiplier: multiplier,
+          hasCaching: false,
+          confidence: "medium",
+          rawSnippet: snippet,
+        });
+      }
+    }
+
+    // Also detect model instantiation as call sites (the factory pattern)
+    const factoryRegex = /get_chat_llm\s*\(/g;
+    let fMatch: RegExpExecArray | null;
+    while ((fMatch = factoryRegex.exec(content)) !== null) {
+      const lineIdx = content.substring(0, fMatch.index).split("\n").length - 1;
+      const snippet = lines.slice(Math.max(0, lineIdx - 1), lineIdx + 2).join("\n");
+      const blockLines = lines.slice(Math.max(0, lineIdx - 2), lineIdx + 5).join("\n");
+      const maxTokensMatch = /max_output_tokens\s*=\s*(\d+)/.exec(blockLines);
+
+      sites.push({
+        file: filePath,
+        line: lineIdx + 1,
+        provider: "langchain",
+        callType: "chat",
+        model,
+        maxTokens: maxTokensMatch ? parseInt(maxTokensMatch[1], 10) : null,
+        estimatedInputTokens: null,
+        inLoop: false,
+        loopMultiplier: 1,
+        hasCaching: false,
+        confidence: "medium",
+        rawSnippet: snippet,
+      });
+    }
+
+    return sites;
+  },
+};

@@ -1,0 +1,28 @@
+{
+  "name": "llm-cost-attr",
+  "version": "0.1.0",
+  "description": "FinOps cost attribution and optimization tool for LLM API usage",
+  "type": "module",
+  "bin": {
+    "llm-cost-attr": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "cli-table3": "^0.6.5",
+    "commander": "^12.1.0",
+    "fast-glob": "^3.3.2",
+    "ignore": "^5.3.2"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
