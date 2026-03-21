@@ -8,7 +8,7 @@ function fmtCost(n: number): string {
   return "$" + n.toFixed(2);
 }
 
-const PRICING_DATE = "March 2026";
+import { PRICING_DATE } from "../pricing/catalog.js";
 
 export function generateHtmlReport(report: CostReport, recommendations: Recommendation[] = []): string {
   const rows = report.estimates

@@ -12,7 +12,7 @@ import { listPricing } from "./pricing/index.js";
 import chalk from "chalk";
 
 // Read version from package.json at build time
-const PKG_VERSION = "0.2.0";
+const PKG_VERSION = "0.2.1";
 
 const program = new Command();
 

@@ -5,8 +5,8 @@ describe("Pricing Resolver", () => {
   it("resolves exact model names", () => {
     const result = resolveModel("claude-haiku-4-5-20251001");
     expect(result).not.toBeNull();
-    expect(result!.inputPer1M).toBe(0.80);
-    expect(result!.outputPer1M).toBe(4);
+    expect(result!.inputPer1M).toBe(0.25);
+    expect(result!.outputPer1M).toBe(1.25);
   });
 
   it("resolves aliases", () => {
