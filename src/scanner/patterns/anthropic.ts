@@ -1,4 +1,5 @@
 import type { CallSite, PatternScanner } from "../types.js";
+import { escapeRegex } from "../../utils/escape.js";
 
 const IMPORT_PATTERNS = [
   /@anthropic-ai\/sdk/,
@@ -6,7 +7,26 @@ const IMPORT_PATTERNS = [
   /import\s+Anthropic/,
 ];
 
-function detectLoop(lines: string[], lineIdx: number): { inLoop: boolean; multiplier: number } {
+/** Pre-compute line start offsets for O(log N) line lookups. */
+function buildLineIndex(content: string): number[] {
+  const offsets = [0];
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === "\n") offsets.push(i + 1);
+  }
+  return offsets;
+}
+
+function offsetToLine(offsets: number[], offset: number): number {
+  let lo = 0, hi = offsets.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (offsets[mid] <= offset) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+function detectLoop(lines: string[], lineIdx: number, content: string): { inLoop: boolean; multiplier: number } {
   const start = Math.max(0, lineIdx - 30);
   let braceDepth = 0;
   for (let i = lineIdx - 1; i >= start; i--) {
@@ -21,8 +41,7 @@ function detectLoop(lines: string[], lineIdx: number): { inLoop: boolean; multip
       const entriesMatch = line.match(/Object\.entries\s*\((\w+)\)/);
       if (entriesMatch) {
         const objName = entriesMatch[1];
-        const content = lines.join("\n");
-        const objDef = content.match(new RegExp(`(?:const|let|var)\\s+${objName}[^=]*=\\s*\\{([^}]*)\\}`, 's'));
+        const objDef = content.match(new RegExp(`(?:const|let|var)\\s+${escapeRegex(objName)}[^=]*=\\s*\\{([^}]*)\\}`, 's'));
         if (objDef) {
           const keyCount = (objDef[1].match(/\w+\s*:/g) || []).length;
           if (keyCount > 0) return { inLoop: true, multiplier: keyCount };
@@ -51,7 +70,7 @@ function detectCallerLoop(content: string, lines: string[], lineIdx: number): { 
   for (let i = 0; i < lines.length; i++) {
     if (i === lineIdx) continue;
     if (lines[i].includes(funcName + "(") || lines[i].includes(`await ${funcName}(`)) {
-      const result = detectLoop(lines, i);
+      const result = detectLoop(lines, i, content);
       if (result.inLoop) return result;
     }
   }
@@ -72,34 +91,32 @@ export const anthropicScanner: PatternScanner = {
   findCallSites(filePath: string, content: string, lines: string[]): CallSite[] {
     const sites: CallSite[] = [];
     const regex = /\.messages\.create\s*\(/g;
+    const lineIndex = buildLineIndex(content);
     let match: RegExpExecArray | null;
 
     while ((match = regex.exec(content)) !== null) {
-      const lineIdx = content.substring(0, match.index).split("\n").length - 1;
+      const lineIdx = offsetToLine(lineIndex, match.index);
       const snippet = lines.slice(Math.max(0, lineIdx - 1), lineIdx + 2).join("\n");
 
-      // Direct + cross-function loop detection
-      let loop = detectLoop(lines, lineIdx);
+      let loop = detectLoop(lines, lineIdx, content);
       if (!loop.inLoop) {
         const callerLoop = detectCallerLoop(content, lines, lineIdx);
         if (callerLoop) loop = callerLoop;
       }
 
-      // Extract model from nearby code block
       const blockStart = Math.max(0, lineIdx - 5);
       const block = lines.slice(blockStart, lineIdx + 10).join("\n");
       const modelMatch = /model\s*:\s*["']([^"']+)["']/.exec(block);
       const maxTokensMatch = /max_tokens\s*:\s*(\d+)/.exec(block);
 
-      // Estimate input tokens from system prompt
+      // Estimate input tokens from system prompt variable
       let inputTokens: number | null = null;
       const systemVarMatch = /system\s*:\s*(\w+)/.exec(block);
       if (systemVarMatch) {
         const varName = systemVarMatch[1];
-        const varDef = content.match(new RegExp(`(?:const|let|var)\\s+${varName}\\s*=\\s*[\`"']([\\s\\S]*?)[\`"']`));
+        const varDef = content.match(new RegExp(`(?:const|let|var)\\s+${escapeRegex(varName)}\\s*=\\s*[\`"']([\\s\\S]*?)[\`"']`));
         if (varDef) inputTokens = Math.ceil(varDef[1].length / 4);
       }
-      // Also check for inline system string
       const inlineSystem = /system\s*:\s*["'`]([^"'`]{20,})["'`]/.exec(block);
       if (!inputTokens && inlineSystem) {
         inputTokens = Math.ceil(inlineSystem[1].length / 4);

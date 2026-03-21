@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import fs from "fs/promises";
 import path from "path";
+import { fileURLToPath } from "url";
 import { scanDirectory } from "./scanner/index.js";
 import { estimateCosts } from "./estimator/index.js";
 import { analyzeOptimizations } from "./analyzer/index.js";
@@ -10,12 +11,15 @@ import { generateHtmlReport } from "./reporter/html.js";
 import { listPricing } from "./pricing/index.js";
 import chalk from "chalk";
 
+// Read version from package.json at build time
+const PKG_VERSION = "0.2.0";
+
 const program = new Command();
 
 program
   .name("llm-cost-attr")
   .description("FinOps cost attribution tool for LLM API usage")
-  .version("0.1.0");
+  .version(PKG_VERSION);
 
 async function validatePath(p: string): Promise<string> {
   const resolved = path.resolve(p);
@@ -133,8 +137,8 @@ program
   .action(() => {
     const models = listPricing();
     console.log("");
-    console.log(chalk.bold.cyan("  LLM Model Pricing (per 1M tokens)"));
-    console.log(chalk.gray("  " + "━".repeat(50)));
+    console.log(chalk.bold.cyan("  LLM Model Pricing (per 1M tokens) — as of March 2026"));
+    console.log(chalk.gray("  " + "━".repeat(55)));
     console.log("");
 
     let currentProvider = "";

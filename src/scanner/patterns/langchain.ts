@@ -16,20 +16,29 @@ const CALL_PATTERNS = [
   { regex: /\.stream\s*\(/g, callType: "chat" as const },
 ];
 
-// Detect LangChain model instantiation to extract model name
-const MODEL_INIT_PATTERNS = [
-  /ChatGoogleGenerativeAI\s*\([^)]*model\s*=\s*["']([^"']+)["']/g,
-  /ChatVertexAI\s*\([^)]*model\s*=\s*["']([^"']+)["']/g,
-  /ChatOpenAI\s*\([^)]*model\s*=\s*["']([^"']+)["']/g,
-  /ChatAnthropic\s*\([^)]*model\s*=\s*["']([^"']+)["']/g,
-  /get_chat_llm\s*\(/g,
-];
+function buildLineIndex(content: string): number[] {
+  const offsets = [0];
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === "\n") offsets.push(i + 1);
+  }
+  return offsets;
+}
 
-function resolveProvider(content: string): string {
+function offsetToLine(offsets: number[], offset: number): number {
+  let lo = 0, hi = offsets.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (offsets[mid] <= offset) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+function resolveProvider(content: string): string | null {
   if (/ChatGoogleGenerativeAI|ChatVertexAI|gemini/i.test(content)) return "google";
   if (/ChatOpenAI|openai/i.test(content)) return "openai";
   if (/ChatAnthropic|claude/i.test(content)) return "anthropic";
-  return "google"; // default for this codebase
+  return null; // unknown — don't assume
 }
 
 function extractModelFromFile(content: string): string | null {
@@ -52,20 +61,22 @@ export const langchainScanner: PatternScanner = {
   findCallSites(filePath: string, content: string, lines: string[]): CallSite[] {
     const sites: CallSite[] = [];
     const model = extractModelFromFile(content);
+    const lineIndex = buildLineIndex(content);
 
     for (const { regex, callType } of CALL_PATTERNS) {
       regex.lastIndex = 0;
       let match: RegExpExecArray | null;
       while ((match = regex.exec(content)) !== null) {
-        const lineIdx = content.substring(0, match.index).split("\n").length - 1;
+        const lineIdx = offsetToLine(lineIndex, match.index);
         const line = lines[lineIdx];
 
-        // Skip if this is not an LLM call (e.g., dict.invoke, list.invoke)
+        // Skip comments
         if (/^\s*#/.test(line)) continue;
+
         // Must be on an object that looks like an LLM
-        if (!/(?:llm|model|chain|agent|graph|self\.\w*(?:llm|gemini|service))/.test(
-          lines.slice(Math.max(0, lineIdx - 3), lineIdx + 1).join("\n")
-        )) continue;
+        const context = lines.slice(Math.max(0, lineIdx - 3), lineIdx + 1).join("\n");
+        const isLlmCall = /(?:llm|model|chain|agent|graph|self\.\w*(?:llm|gemini|service))/.test(context);
+        if (!isLlmCall) continue;
 
         const snippet = lines.slice(Math.max(0, lineIdx - 1), lineIdx + 2).join("\n");
 
@@ -92,17 +103,17 @@ export const langchainScanner: PatternScanner = {
           inLoop,
           loopMultiplier: multiplier,
           hasCaching: false,
-          confidence: "medium",
+          confidence: isLlmCall ? "medium" : "low",
           rawSnippet: snippet,
         });
       }
     }
 
-    // Also detect model instantiation as call sites (the factory pattern)
+    // Detect factory instantiation calls
     const factoryRegex = /get_chat_llm\s*\(/g;
     let fMatch: RegExpExecArray | null;
     while ((fMatch = factoryRegex.exec(content)) !== null) {
-      const lineIdx = content.substring(0, fMatch.index).split("\n").length - 1;
+      const lineIdx = offsetToLine(lineIndex, fMatch.index);
       const snippet = lines.slice(Math.max(0, lineIdx - 1), lineIdx + 2).join("\n");
       const blockLines = lines.slice(Math.max(0, lineIdx - 2), lineIdx + 5).join("\n");
       const maxTokensMatch = /max_output_tokens\s*=\s*(\d+)/.exec(blockLines);

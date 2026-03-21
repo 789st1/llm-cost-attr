@@ -1,6 +1,9 @@
 import fg from "fast-glob";
 import fs from "fs/promises";
 import path from "path";
+import ignore from "ignore";
+
+const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB
 
 const ALWAYS_IGNORE = [
   "node_modules/**",
@@ -24,12 +27,24 @@ const CODE_EXTENSIONS = [
   "py",
 ];
 
+async function loadGitignore(root: string): Promise<string[]> {
+  try {
+    const content = await fs.readFile(path.join(root, ".gitignore"), "utf-8");
+    return content.split("\n").filter((line) => line.trim() && !line.startsWith("#"));
+  } catch {
+    return [];
+  }
+}
+
 export async function walkFiles(root: string): Promise<string[]> {
+  const gitignorePatterns = await loadGitignore(root);
+  const allIgnore = [...ALWAYS_IGNORE, ...gitignorePatterns];
+
   const patterns = CODE_EXTENSIONS.map((ext) => `**/*.${ext}`);
   const files = await fg(patterns, {
     cwd: root,
     absolute: true,
-    ignore: ALWAYS_IGNORE,
+    ignore: allIgnore,
     dot: false,
     followSymbolicLinks: false,
   });
@@ -37,5 +52,9 @@ export async function walkFiles(root: string): Promise<string[]> {
 }
 
 export async function readFile(filePath: string): Promise<string> {
+  const stat = await fs.stat(filePath);
+  if (stat.size > MAX_FILE_SIZE) {
+    throw new Error(`File too large (${(stat.size / 1024 / 1024).toFixed(1)}MB), skipping`);
+  }
   return fs.readFile(filePath, "utf-8");
 }
