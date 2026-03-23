@@ -78,7 +78,7 @@ describe("LangChain Scanner", () => {
     const { content, lines, path: fp } = loadFixture("sample-langchain.py");
     const sites = langchainScanner.findCallSites(fp, content, lines);
     expect(sites.length).toBeGreaterThanOrEqual(1);
-    expect(sites.some((s) => s.provider === "langchain")).toBe(true);
+    expect(sites.some((s) => s.provider === "google" || s.provider === "langchain")).toBe(true);
   });
 });
 

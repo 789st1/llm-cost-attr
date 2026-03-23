@@ -36,8 +36,6 @@ outputs:
     description: "Total estimated monthly cost"
   call-sites:
     description: "Number of LLM call sites found"
-  report:
-    description: "Full JSON report"
 
 runs:
   using: "composite"
@@ -51,38 +49,60 @@ runs:
       shell: bash
       env:
         GEMINI_API_KEY: ${{ inputs.gemini-api-key }}
+        SCAN_PATH: ${{ inputs.path }}
+        SCAN_VOLUME: ${{ inputs.volume }}
+        SCAN_BUDGET: ${{ inputs.budget }}
+        SCAN_SMART: ${{ inputs.smart }}
+        SCAN_FORMAT: ${{ inputs.format }}
       run: |
         SMART_FLAG=""
-        if [ "${{ inputs.smart }}" = "true" ]; then
+        if [ "$SCAN_SMART" = "true" ]; then
           SMART_FLAG="--smart"
         fi
 
-        # Run scan and capture JSON output
-        npx llm-cost-attr@latest scan "${{ inputs.path }}" \
-          -v "${{ inputs.volume }}" \
-          -f json \
-          -o /tmp/llm-cost-report.json \
+        FORMAT_FLAG="-f terminal"
+        if [ "$SCAN_FORMAT" = "json" ]; then
+          FORMAT_FLAG="-f json"
+        fi
+
+        # Run scan once, capture both terminal and JSON output
+        npx llm-cost-attr@latest scan "$SCAN_PATH" \
+          -v "$SCAN_VOLUME" \
+          $FORMAT_FLAG \
           $SMART_FLAG
 
-        # Extract cost from JSON
-        TOTAL_COST=$(node -e "const r=JSON.parse(require('fs').readFileSync('/tmp/llm-cost-report.json','utf8'));console.log(r.totalMonthlyCost)")
-        CALL_SITES=$(node -e "const r=JSON.parse(require('fs').readFileSync('/tmp/llm-cost-report.json','utf8'));console.log(r.totalCallSites)")
+        # Get cost data for budget check via JSON
+        npx llm-cost-attr@latest scan "$SCAN_PATH" \
+          -v "$SCAN_VOLUME" \
+          -f json \
+          -o /tmp/llm-cost-report.json \
+          $SMART_FLAG 2>/dev/null || true
 
-        echo "total-cost=$TOTAL_COST" >> $GITHUB_OUTPUT
-        echo "call-sites=$CALL_SITES" >> $GITHUB_OUTPUT
-        echo "report=$(cat /tmp/llm-cost-report.json)" >> $GITHUB_OUTPUT
+        if [ -f /tmp/llm-cost-report.json ]; then
+          TOTAL_COST=$(node -e "
+            const r = JSON.parse(require('fs').readFileSync('/tmp/llm-cost-report.json', 'utf8'));
+            console.log(typeof r.totalMonthlyCost === 'number' ? r.totalMonthlyCost : 0);
+          ")
+          CALL_SITES=$(node -e "
+            const r = JSON.parse(require('fs').readFileSync('/tmp/llm-cost-report.json', 'utf8'));
+            console.log(typeof r.totalCallSites === 'number' ? r.totalCallSites : 0);
+          ")
 
-        # Also print terminal output
-        npx llm-cost-attr@latest scan "${{ inputs.path }}" -v "${{ inputs.volume }}" $SMART_FLAG
+          echo "total-cost=$TOTAL_COST" >> "$GITHUB_OUTPUT"
+          echo "call-sites=$CALL_SITES" >> "$GITHUB_OUTPUT"
 
-        # Budget check
-        BUDGET="${{ inputs.budget }}"
-        if [ "$BUDGET" != "0" ]; then
-          OVER=$(node -e "console.log($TOTAL_COST > $BUDGET ? 'true' : 'false')")
-          if [ "$OVER" = "true" ]; then
-            echo "::error::Estimated monthly LLM cost (\$$TOTAL_COST) exceeds budget (\$$BUDGET)"
-            exit 1
-          else
-            echo "LLM cost (\$$TOTAL_COST) is within budget (\$$BUDGET)"
+          # Budget check with validated numbers
+          if [ "$SCAN_BUDGET" != "0" ]; then
+            OVER=$(node -e "
+              const cost = parseFloat('$TOTAL_COST') || 0;
+              const budget = parseFloat(process.env.SCAN_BUDGET) || 0;
+              console.log(budget > 0 && cost > budget ? 'true' : 'false');
+            ")
+            if [ "$OVER" = "true" ]; then
+              echo "::error::Estimated monthly LLM cost (\$$TOTAL_COST) exceeds budget (\$$SCAN_BUDGET)"
+              exit 1
+            else
+              echo "LLM cost (\$$TOTAL_COST) is within budget (\$$SCAN_BUDGET)"
+            fi
           fi
         fi

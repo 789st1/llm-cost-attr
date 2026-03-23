@@ -1,8 +1,14 @@
 import type { CallSite } from "../scanner/types.js";
 import type { GeminiEstimate } from "./types.js";
 import { resolveModel } from "../pricing/index.js";
+import { DEFAULT_TOKENS } from "../estimator/tokens.js";
 
 const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+
+// Sane bounds for validation
+const MAX_INPUT_TOKENS = 200_000; // Gemini context window
+const MAX_OUTPUT_TOKENS = 65_536;
+const MAX_LOOP_MULTIPLIER = 1000;
 
 function getApiKey(): string {
   const key = process.env.GEMINI_API_KEY;
@@ -39,44 +45,77 @@ Return ONLY valid JSON, no markdown, no explanation:
 {"inputTokens": <number>, "outputTokens": <number>, "model": "<string>", "loopMultiplier": <number>, "cacheable": <boolean>, "reasoning": "<brief explanation>"}`;
 }
 
-async function callGemini(prompt: string): Promise<string> {
+async function callGeminiWithRetry(prompt: string, maxRetries: number = 3): Promise<string> {
   const apiKey = getApiKey();
-  const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 500,
-      },
-    }),
-  });
+  let lastError: Error | null = null;
 
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Gemini API error ${response.status}: ${err}`);
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: 500,
+          },
+        }),
+      });
+
+      if (response.status === 429) {
+        // Rate limited — wait with exponential backoff
+        const delay = Math.min(30000, 2000 * Math.pow(2, attempt));
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+
+      if (response.status >= 500) {
+        // Server error — retry
+        const delay = 1000 * Math.pow(2, attempt);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+
+      if (!response.ok) {
+        const err = await response.text();
+        throw new Error(`Gemini API error ${response.status}: ${err.substring(0, 200)}`);
+      }
+
+      const data = await response.json() as any;
+      return data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+    } catch (err: any) {
+      lastError = err;
+      if (attempt < maxRetries - 1) {
+        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+      }
+    }
   }
 
-  const data = await response.json() as any;
-  return data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  throw lastError ?? new Error("Gemini API call failed after retries");
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 function parseGeminiResponse(raw: string, site: CallSite): GeminiEstimate {
-  // Strip markdown code fences if present
   const cleaned = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-  
+  const defaults = DEFAULT_TOKENS[site.callType] ?? DEFAULT_TOKENS.chat;
+
   try {
     const parsed = JSON.parse(cleaned);
     const model = parsed.model || site.model || "unknown";
     const pricing = resolveModel(model, site.provider);
-    
-    const inputTokens = Math.max(1, Math.round(parsed.inputTokens || 500));
-    const outputTokens = Math.max(0, Math.round(parsed.outputTokens || 300));
-    
+
+    // Validate and clamp values to sane ranges
+    const inputTokens = clamp(Math.round(Number(parsed.inputTokens) || defaults.input), 1, MAX_INPUT_TOKENS);
+    const outputTokens = clamp(Math.round(Number(parsed.outputTokens) || defaults.output), 0, MAX_OUTPUT_TOKENS);
+    const loopMultiplier = clamp(Math.round(Number(parsed.loopMultiplier) || site.loopMultiplier), 1, MAX_LOOP_MULTIPLIER);
+
     const inputCost = pricing ? (inputTokens * pricing.inputPer1M) / 1_000_000 : 0;
     const outputCost = pricing ? (outputTokens * pricing.outputPer1M) / 1_000_000 : 0;
-    
+
     return {
       file: site.file,
       line: site.line,
@@ -84,20 +123,20 @@ function parseGeminiResponse(raw: string, site: CallSite): GeminiEstimate {
       estimatedOutputTokens: outputTokens,
       estimatedCostPerCall: inputCost + outputCost,
       model,
-      reasoning: parsed.reasoning || "",
-      loopMultiplier: parsed.loopMultiplier || site.loopMultiplier,
-      cacheable: parsed.cacheable ?? false,
+      reasoning: String(parsed.reasoning || "").substring(0, 500),
+      loopMultiplier,
+      cacheable: Boolean(parsed.cacheable),
     };
   } catch {
-    // Fallback: return defaults if Gemini response is unparseable
+    // Fallback: preserve scanner's own estimates (not different hardcoded values)
     return {
       file: site.file,
       line: site.line,
-      estimatedInputTokens: 500,
-      estimatedOutputTokens: 300,
+      estimatedInputTokens: site.estimatedInputTokens ?? defaults.input,
+      estimatedOutputTokens: site.maxTokens ?? defaults.output,
       estimatedCostPerCall: 0,
       model: site.model || "unknown",
-      reasoning: "Failed to parse Gemini response: " + raw.substring(0, 100),
+      reasoning: "Failed to parse Gemini response",
       loopMultiplier: site.loopMultiplier,
       cacheable: false,
     };
@@ -114,7 +153,7 @@ export async function auditCallSite(
   const contextLines = lines.slice(start, end).map((l, i) => `${start + i + 1}: ${l}`).join("\n");
 
   const prompt = buildPrompt(site, contextLines);
-  const raw = await callGemini(prompt);
+  const raw = await callGeminiWithRetry(prompt);
   return parseGeminiResponse(raw, site);
 }
 
@@ -123,16 +162,17 @@ export async function auditAllCallSites(
   fileContents: Map<string, string>,
 ): Promise<GeminiEstimate[]> {
   const results: GeminiEstimate[] = [];
-  
-  // Process sequentially to respect rate limits (15 RPM on free tier)
-  for (const site of sites) {
+  const defaults = DEFAULT_TOKENS.chat;
+
+  for (let i = 0; i < sites.length; i++) {
+    const site = sites[i];
     const content = fileContents.get(site.file);
     if (!content) {
       results.push({
         file: site.file,
         line: site.line,
-        estimatedInputTokens: 500,
-        estimatedOutputTokens: 300,
+        estimatedInputTokens: site.estimatedInputTokens ?? defaults.input,
+        estimatedOutputTokens: site.maxTokens ?? defaults.output,
         estimatedCostPerCall: 0,
         model: site.model || "unknown",
         reasoning: "File content not available",
@@ -141,12 +181,12 @@ export async function auditAllCallSites(
       });
       continue;
     }
-    
+
     try {
       const estimate = await auditCallSite(site, content);
       results.push(estimate);
       // Rate limit: wait 4s between calls (15 RPM = 1 per 4s)
-      if (sites.indexOf(site) < sites.length - 1) {
+      if (i < sites.length - 1) {
         await new Promise(r => setTimeout(r, 4000));
       }
     } catch (err: any) {
@@ -154,8 +194,8 @@ export async function auditAllCallSites(
       results.push({
         file: site.file,
         line: site.line,
-        estimatedInputTokens: 500,
-        estimatedOutputTokens: 300,
+        estimatedInputTokens: site.estimatedInputTokens ?? defaults.input,
+        estimatedOutputTokens: site.maxTokens ?? defaults.output,
         estimatedCostPerCall: 0,
         model: site.model || "unknown",
         reasoning: `Audit failed: ${err.message}`,
@@ -164,6 +204,6 @@ export async function auditAllCallSites(
       });
     }
   }
-  
+
   return results;
 }

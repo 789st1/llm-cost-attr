@@ -9,6 +9,7 @@ const IMPORT_PATTERNS = [
 const CALL_PATTERNS = [
   { regex: /\.chat\.completions\.create\s*\(/g, callType: "chat" as const },
   { regex: /\.embeddings\.create\s*\(/g, callType: "embedding" as const },
+  { regex: /\.responses\.create\s*\(/g, callType: "chat" as const },
 ];
 
 function buildLineIndex(content: string): number[] {

@@ -1,6 +1,6 @@
 {
   "name": "llm-cost-attr",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "FinOps cost attribution and optimization tool for LLM API usage. Scans codebases for LLM calls, estimates costs, recommends optimizations.",
   "type": "module",
   "bin": {

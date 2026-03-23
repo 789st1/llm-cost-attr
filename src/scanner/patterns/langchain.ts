@@ -9,11 +9,15 @@ const IMPORT_PATTERNS = [
   /ChatAnthropic/,
 ];
 
-const CALL_PATTERNS = [
-  { regex: /\.invoke\s*\(/g, callType: "chat" as const },
-  { regex: /\.ainvoke\s*\(/g, callType: "chat" as const },
-  { regex: /\.astream\s*\(/g, callType: "chat" as const },
-  { regex: /\.stream\s*\(/g, callType: "chat" as const },
+// More specific patterns — only match on known LLM variable patterns
+const LLM_CALL_PATTERNS = [
+  { regex: /(?:llm|chat_model|model|chain|agent|graph)\s*\.\s*invoke\s*\(/g, callType: "chat" as const },
+  { regex: /(?:llm|chat_model|model|chain|agent|graph)\s*\.\s*ainvoke\s*\(/g, callType: "chat" as const },
+  { regex: /(?:llm|chat_model|model|chain|agent|graph)\s*\.\s*stream\s*\(/g, callType: "chat" as const },
+  { regex: /(?:llm|chat_model|model|chain|agent|graph)\s*\.\s*astream\s*\(/g, callType: "chat" as const },
+  // Direct self.llm.invoke patterns
+  { regex: /self\.\w*(?:llm|model|chain|agent)\w*\.invoke\s*\(/g, callType: "chat" as const },
+  { regex: /self\.\w*(?:llm|model|chain|agent)\w*\.ainvoke\s*\(/g, callType: "chat" as const },
 ];
 
 function buildLineIndex(content: string): number[] {
@@ -34,11 +38,11 @@ function offsetToLine(offsets: number[], offset: number): number {
   return lo;
 }
 
-function resolveProvider(content: string): string | null {
+function resolveProvider(content: string): string {
   if (/ChatGoogleGenerativeAI|ChatVertexAI|gemini/i.test(content)) return "google";
-  if (/ChatOpenAI|openai/i.test(content)) return "openai";
+  if (/ChatOpenAI|gpt-|openai/i.test(content)) return "openai";
   if (/ChatAnthropic|claude/i.test(content)) return "anthropic";
-  return null; // unknown — don't assume
+  return "langchain";
 }
 
 function extractModelFromFile(content: string): string | null {
@@ -61,9 +65,10 @@ export const langchainScanner: PatternScanner = {
   findCallSites(filePath: string, content: string, lines: string[]): CallSite[] {
     const sites: CallSite[] = [];
     const model = extractModelFromFile(content);
+    const provider = resolveProvider(content);
     const lineIndex = buildLineIndex(content);
 
-    for (const { regex, callType } of CALL_PATTERNS) {
+    for (const { regex, callType } of LLM_CALL_PATTERNS) {
       regex.lastIndex = 0;
       let match: RegExpExecArray | null;
       while ((match = regex.exec(content)) !== null) {
@@ -72,11 +77,6 @@ export const langchainScanner: PatternScanner = {
 
         // Skip comments
         if (/^\s*#/.test(line)) continue;
-
-        // Must be on an object that looks like an LLM
-        const context = lines.slice(Math.max(0, lineIdx - 3), lineIdx + 1).join("\n");
-        const isLlmCall = /(?:llm|model|chain|agent|graph|self\.\w*(?:llm|gemini|service))/.test(context);
-        if (!isLlmCall) continue;
 
         const snippet = lines.slice(Math.max(0, lineIdx - 1), lineIdx + 2).join("\n");
 
@@ -95,7 +95,7 @@ export const langchainScanner: PatternScanner = {
         sites.push({
           file: filePath,
           line: lineIdx + 1,
-          provider: "langchain",
+          provider,
           callType,
           model,
           maxTokens: null,
@@ -103,13 +103,13 @@ export const langchainScanner: PatternScanner = {
           inLoop,
           loopMultiplier: multiplier,
           hasCaching: false,
-          confidence: isLlmCall ? "medium" : "low",
+          confidence: "medium",
           rawSnippet: snippet,
         });
       }
     }
 
-    // Detect factory instantiation calls
+    // Detect factory instantiation calls (e.g., get_chat_llm())
     const factoryRegex = /get_chat_llm\s*\(/g;
     let fMatch: RegExpExecArray | null;
     while ((fMatch = factoryRegex.exec(content)) !== null) {
@@ -121,7 +121,7 @@ export const langchainScanner: PatternScanner = {
       sites.push({
         file: filePath,
         line: lineIdx + 1,
-        provider: "langchain",
+        provider,
         callType: "chat",
         model,
         maxTokens: maxTokensMatch ? parseInt(maxTokensMatch[1], 10) : null,

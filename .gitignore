@@ -3,3 +3,8 @@ dist/
 *.tgz
 .env
 .npmrc
+*.json
+*.html
+!package.json
+!package-lock.json
+!tsconfig.json

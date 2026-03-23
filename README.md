@@ -113,7 +113,7 @@ llm-cost-attr pricing
 
 Built-in pricing for all major models (updated March 2026):
 
-- **Anthropic**: Opus 4 ($15/$75), Sonnet 4 ($3/$15), Haiku 4.5 ($0.80/$4)
+- **Anthropic**: Opus 4 ($5/$25), Sonnet 4 ($3/$15), Haiku 4.5 ($0.25/$1.25)
 - **OpenAI**: GPT-4o ($2.50/$10), GPT-4o-mini ($0.15/$0.60), o1/o3
 - **Google**: Gemini 2.0 Flash ($0.10/$0.40), Gemini 2.0 Pro ($1.25/$5)
 

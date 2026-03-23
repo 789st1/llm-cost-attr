@@ -12,7 +12,7 @@ import { auditAllCallSites } from "./accuracy/gemini-auditor.js";
 import { runAccuracyLoop } from "./accuracy/loop.js";
 import chalk from "chalk";
 
-const PKG_VERSION = "0.3.0";
+const PKG_VERSION = "0.3.1";
 
 const program = new Command();
 
@@ -128,6 +128,10 @@ program
   .option("-o, --output <file>", "Write output to file")
   .action(async (paths: string[], opts: { volume: string; format: string; output?: string }) => {
     const volume = parseInt(opts.volume, 10);
+    if (isNaN(volume) || volume < 1) {
+      console.error(chalk.red("  Error: --volume must be a positive number"));
+      process.exit(1);
+    }
     const reports = [];
 
     for (const repoPath of paths) {
@@ -183,6 +187,23 @@ program
       process.exit(1);
     }
 
+    const maxRounds = parseInt(opts.rounds, 10);
+    const targetAccuracy = parseInt(opts.target, 10);
+    const volume = parseInt(opts.volume, 10);
+
+    if (isNaN(maxRounds) || maxRounds < 1) {
+      console.error(chalk.red("  Error: --rounds must be a positive number"));
+      process.exit(1);
+    }
+    if (isNaN(targetAccuracy) || targetAccuracy < 1 || targetAccuracy > 100) {
+      console.error(chalk.red("  Error: --target must be between 1 and 100"));
+      process.exit(1);
+    }
+    if (isNaN(volume) || volume < 1) {
+      console.error(chalk.red("  Error: --volume must be a positive number"));
+      process.exit(1);
+    }
+
     const repoPaths = [];
     for (const p of paths) {
       repoPaths.push(await validatePath(p));
@@ -190,9 +211,9 @@ program
 
     const result = await runAccuracyLoop({
       repoPaths,
-      maxRounds: parseInt(opts.rounds, 10),
-      targetAccuracy: parseInt(opts.target, 10),
-      volume: parseInt(opts.volume, 10),
+      maxRounds,
+      targetAccuracy,
+      volume,
     });
 
     if (result.converged) {

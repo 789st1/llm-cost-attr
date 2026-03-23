@@ -90,7 +90,7 @@ export const anthropicScanner: PatternScanner = {
 
   findCallSites(filePath: string, content: string, lines: string[]): CallSite[] {
     const sites: CallSite[] = [];
-    const regex = /\.messages\.create\s*\(/g;
+    const regex = /\.messages\.(?:create|stream)\s*\(/g;
     const lineIndex = buildLineIndex(content);
     let match: RegExpExecArray | null;
 
