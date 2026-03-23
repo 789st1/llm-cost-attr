@@ -12,7 +12,7 @@ import { auditAllCallSites } from "./accuracy/gemini-auditor.js";
 import { runAccuracyLoop } from "./accuracy/loop.js";
 import chalk from "chalk";
 
-const PKG_VERSION = "0.2.0";
+const PKG_VERSION = "0.3.0";
 
 const program = new Command();
 
