@@ -1,6 +1,6 @@
 import type { CallSite } from "../scanner/types.js";
 import { resolveModel, type ModelPricing } from "../pricing/index.js";
-import { DEFAULT_TOKENS } from "./tokens.js";
+import { DEFAULT_TOKENS, OUTPUT_SCALING_FACTOR } from "./tokens.js";
 
 export interface CostEstimate {
   callSite: CallSite;
@@ -9,7 +9,7 @@ export interface CostEstimate {
   outputTokens: number;
   costPerCall: number;
   callsPerInvocation: number;
-  monthlyCost: number; // at given volume
+  monthlyCost: number;
   confidence: "high" | "medium" | "low";
 }
 
@@ -38,7 +38,20 @@ export function estimateCosts(
     const defaults = DEFAULT_TOKENS[site.callType] ?? DEFAULT_TOKENS.chat;
 
     const inputTokens = site.estimatedInputTokens ?? defaults.input;
-    const outputTokens = site.maxTokens ?? defaults.output;
+
+    // Output: if max_tokens is set, scale it down (actual output < max).
+    // If not set, use calibrated defaults.
+    let outputTokens: number;
+    if (site.maxTokens) {
+      outputTokens = Math.round(site.maxTokens * OUTPUT_SCALING_FACTOR);
+    } else {
+      outputTokens = defaults.output;
+    }
+
+    // Embeddings have 0 output tokens
+    if (site.callType === "embedding") {
+      outputTokens = 0;
+    }
 
     const inputCost = pricing ? (inputTokens * pricing.inputPer1M) / 1_000_000 : 0;
     const outputCost = pricing ? (outputTokens * pricing.outputPer1M) / 1_000_000 : 0;
@@ -59,7 +72,6 @@ export function estimateCosts(
     });
   }
 
-  // Aggregate
   const totalMonthlyCost = estimates.reduce((sum, e) => sum + e.monthlyCost, 0);
 
   const byProvider: Record<string, number> = {};

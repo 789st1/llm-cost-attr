@@ -1,0 +1,88 @@
+name: "LLM Cost Attribution"
+description: "Scan your codebase for LLM API calls and estimate monthly costs. Fail the build if costs exceed budget."
+author: "Suresh Talapaneni"
+
+branding:
+  icon: "dollar-sign"
+  color: "blue"
+
+inputs:
+  path:
+    description: "Path to scan (default: current directory)"
+    required: false
+    default: "."
+  budget:
+    description: "Monthly cost budget in dollars. Build fails if estimated cost exceeds this."
+    required: false
+    default: "0"
+  volume:
+    description: "Estimated monthly invocations"
+    required: false
+    default: "1000"
+  smart:
+    description: "Use Gemini AI for improved accuracy (requires gemini-api-key)"
+    required: false
+    default: "false"
+  gemini-api-key:
+    description: "Google AI API key for smart mode"
+    required: false
+  format:
+    description: "Output format: terminal, json"
+    required: false
+    default: "terminal"
+
+outputs:
+  total-cost:
+    description: "Total estimated monthly cost"
+  call-sites:
+    description: "Number of LLM call sites found"
+  report:
+    description: "Full JSON report"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+
+    - name: Run LLM Cost Attribution
+      shell: bash
+      env:
+        GEMINI_API_KEY: ${{ inputs.gemini-api-key }}
+      run: |
+        SMART_FLAG=""
+        if [ "${{ inputs.smart }}" = "true" ]; then
+          SMART_FLAG="--smart"
+        fi
+
+        # Run scan and capture JSON output
+        npx llm-cost-attr@latest scan "${{ inputs.path }}" \
+          -v "${{ inputs.volume }}" \
+          -f json \
+          -o /tmp/llm-cost-report.json \
+          $SMART_FLAG
+
+        # Extract cost from JSON
+        TOTAL_COST=$(node -e "const r=JSON.parse(require('fs').readFileSync('/tmp/llm-cost-report.json','utf8'));console.log(r.totalMonthlyCost)")
+        CALL_SITES=$(node -e "const r=JSON.parse(require('fs').readFileSync('/tmp/llm-cost-report.json','utf8'));console.log(r.totalCallSites)")
+
+        echo "total-cost=$TOTAL_COST" >> $GITHUB_OUTPUT
+        echo "call-sites=$CALL_SITES" >> $GITHUB_OUTPUT
+        echo "report=$(cat /tmp/llm-cost-report.json)" >> $GITHUB_OUTPUT
+
+        # Also print terminal output
+        npx llm-cost-attr@latest scan "${{ inputs.path }}" -v "${{ inputs.volume }}" $SMART_FLAG
+
+        # Budget check
+        BUDGET="${{ inputs.budget }}"
+        if [ "$BUDGET" != "0" ]; then
+          OVER=$(node -e "console.log($TOTAL_COST > $BUDGET ? 'true' : 'false')")
+          if [ "$OVER" = "true" ]; then
+            echo "::error::Estimated monthly LLM cost (\$$TOTAL_COST) exceeds budget (\$$BUDGET)"
+            exit 1
+          else
+            echo "LLM cost (\$$TOTAL_COST) is within budget (\$$BUDGET)"
+          fi
+        fi

@@ -1,7 +1,6 @@
 import { Command } from "commander";
 import fs from "fs/promises";
 import path from "path";
-import { fileURLToPath } from "url";
 import { scanDirectory } from "./scanner/index.js";
 import { estimateCosts } from "./estimator/index.js";
 import { analyzeOptimizations } from "./analyzer/index.js";
@@ -9,10 +8,11 @@ import { printReport, printComparison } from "./reporter/terminal.js";
 import { generateJsonReport } from "./reporter/json.js";
 import { generateHtmlReport } from "./reporter/html.js";
 import { listPricing } from "./pricing/index.js";
+import { auditAllCallSites } from "./accuracy/gemini-auditor.js";
+import { runAccuracyLoop } from "./accuracy/loop.js";
 import chalk from "chalk";
 
-// Read version from package.json at build time
-const PKG_VERSION = "0.2.1";
+const PKG_VERSION = "0.2.0";
 
 const program = new Command();
 
@@ -43,10 +43,16 @@ program
   .option("-v, --volume <number>", "Monthly invocations for cost estimation", "1000")
   .option("-f, --format <format>", "Output format: terminal, json, html", "terminal")
   .option("-o, --output <file>", "Write output to file (for json/html)")
-  .action(async (repoPath: string, opts: { volume: string; format: string; output?: string }) => {
+  .option("--smart", "Use Gemini AI to improve estimate accuracy (requires GEMINI_API_KEY)")
+  .action(async (repoPath: string, opts: { volume: string; format: string; output?: string; smart?: boolean }) => {
     const volume = parseInt(opts.volume, 10);
     if (isNaN(volume) || volume < 1) {
       console.error(chalk.red("  Error: --volume must be a positive number"));
+      process.exit(1);
+    }
+
+    if (opts.smart && !process.env.GEMINI_API_KEY) {
+      console.error(chalk.red("  Error: --smart requires GEMINI_API_KEY environment variable"));
       process.exit(1);
     }
 
@@ -55,6 +61,39 @@ program
     try {
       console.log(chalk.gray(`  Scanning ${resolved}...`));
       const scanResult = await scanDirectory(resolved);
+
+      if (opts.smart) {
+        console.log(chalk.cyan("  Smart mode: running Gemini analysis on each call site..."));
+        // Load file contents for Gemini
+        const fileContents = new Map<string, string>();
+        for (const site of scanResult.callSites) {
+          if (!fileContents.has(site.file)) {
+            try {
+              const content = await fs.readFile(site.file, "utf-8");
+              fileContents.set(site.file, content);
+            } catch { /* skip */ }
+          }
+        }
+
+        const geminiEstimates = await auditAllCallSites(scanResult.callSites, fileContents);
+
+        // Override scanner estimates with Gemini's estimates
+        for (let i = 0; i < scanResult.callSites.length; i++) {
+          const ge = geminiEstimates[i];
+          if (ge && ge.reasoning && !ge.reasoning.startsWith("Failed")) {
+            scanResult.callSites[i].estimatedInputTokens = ge.estimatedInputTokens;
+            if (!scanResult.callSites[i].maxTokens) {
+              scanResult.callSites[i].maxTokens = ge.estimatedOutputTokens;
+            }
+            if (ge.loopMultiplier !== scanResult.callSites[i].loopMultiplier) {
+              scanResult.callSites[i].loopMultiplier = ge.loopMultiplier;
+              scanResult.callSites[i].inLoop = ge.loopMultiplier > 1;
+            }
+          }
+        }
+        console.log(chalk.green(`  Smart mode: enhanced ${geminiEstimates.filter(g => !g.reasoning.startsWith("Failed")).length}/${scanResult.callSites.length} estimates`));
+      }
+
       const report = estimateCosts(scanResult.callSites, scanResult.root, scanResult.files, volume, scanResult.errors);
       const recommendations = analyzeOptimizations(report.estimates, volume);
 
@@ -132,13 +171,45 @@ program
   });
 
 program
+  .command("accuracy")
+  .description("Run adversarial accuracy loop to self-improve estimates (requires GEMINI_API_KEY)")
+  .argument("<paths...>", "Paths to repository roots to calibrate against")
+  .option("-r, --rounds <number>", "Maximum rounds", "10")
+  .option("-t, --target <number>", "Target % of sites within ±20% accuracy", "90")
+  .option("-v, --volume <number>", "Monthly invocations for cost estimation", "1000")
+  .action(async (paths: string[], opts: { rounds: string; target: string; volume: string }) => {
+    if (!process.env.GEMINI_API_KEY) {
+      console.error(chalk.red("  Error: GEMINI_API_KEY environment variable is required"));
+      process.exit(1);
+    }
+
+    const repoPaths = [];
+    for (const p of paths) {
+      repoPaths.push(await validatePath(p));
+    }
+
+    const result = await runAccuracyLoop({
+      repoPaths,
+      maxRounds: parseInt(opts.rounds, 10),
+      targetAccuracy: parseInt(opts.target, 10),
+      volume: parseInt(opts.volume, 10),
+    });
+
+    if (result.converged) {
+      console.log(chalk.green("  Accuracy loop converged successfully."));
+    } else {
+      console.log(chalk.yellow("  Accuracy loop did not fully converge. Consider adding more test repos or adjusting target."));
+    }
+  });
+
+program
   .command("pricing")
   .description("Show current model pricing")
   .action(() => {
     const models = listPricing();
     console.log("");
-    console.log(chalk.bold.cyan("  LLM Model Pricing (per 1M tokens) — as of March 2026"));
-    console.log(chalk.gray("  " + "━".repeat(55)));
+    console.log(chalk.bold.cyan("  LLM Model Pricing (per 1M tokens)"));
+    console.log(chalk.gray("  " + "━".repeat(50)));
     console.log("");
 
     let currentProvider = "";

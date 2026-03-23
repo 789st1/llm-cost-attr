@@ -32,8 +32,8 @@ describe("Cost Estimator", () => {
       provider: "anthropic",
       callType: "chat",
       model: "claude-haiku-4-5-20251001",
-      maxTokens: 150,
-      estimatedInputTokens: 500,
+      maxTokens: null, // use defaults
+      estimatedInputTokens: null, // use defaults
       inLoop: true,
       loopMultiplier: 5,
       hasCaching: false,
@@ -42,8 +42,8 @@ describe("Cost Estimator", () => {
     }];
 
     const report = estimateCosts(sites, "/test", 10, 1000);
-    const singleCall = report.estimates[0].costPerCall;
-    expect(report.totalMonthlyCost).toBeCloseTo(singleCall * 5 * 1000, 4);
+    const singleCallCost = report.estimates[0].costPerCall;
+    expect(report.totalMonthlyCost).toBeCloseTo(singleCallCost * 5 * 1000, 4);
   });
 
   it("handles unknown models gracefully", () => {
@@ -65,5 +65,26 @@ describe("Cost Estimator", () => {
     const report = estimateCosts(sites, "/test", 10, 1000);
     expect(report.totalCallSites).toBe(1);
     expect(report.totalMonthlyCost).toBe(0); // no pricing = $0
+  });
+
+  it("applies output scaling when max_tokens is set", () => {
+    const sites: CallSite[] = [{
+      file: "/test/file.ts",
+      line: 10,
+      provider: "anthropic",
+      callType: "chat",
+      model: "claude-haiku-4-5-20251001",
+      maxTokens: 1000,
+      estimatedInputTokens: 500,
+      inLoop: false,
+      loopMultiplier: 1,
+      hasCaching: false,
+      confidence: "high",
+      rawSnippet: "test",
+    }];
+
+    const report = estimateCosts(sites, "/test", 10, 1000);
+    // Output should be 1000 * 0.40 = 400, not 1000
+    expect(report.estimates[0].outputTokens).toBe(400);
   });
 });
